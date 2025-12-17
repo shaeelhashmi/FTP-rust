@@ -1,24 +1,37 @@
 use shared::Message;
-use std::io::Write;
-use std::net::TcpStream; // <--- Import our new library
+use std::io::{Read, Write};
+use std::net::TcpStream;
 
 fn main() {
     match TcpStream::connect("127.0.0.1:7878") {
         Ok(mut stream) => {
             println!("Connected!");
 
-            // 1. Create a structured message using our Enum
-            let command = Message::Hello {
-                client_id: "ArchLinuxUser".to_string(),
+            // 1. Send HELLO
+            let msg = Message::Hello {
+                client_id: "RustUser".to_string(),
             };
+            let json = serde_json::to_string(&msg).unwrap();
+            stream.write_all(json.as_bytes()).unwrap();
 
-            // 2. Convert it to a JSON String
-            let json_data = serde_json::to_string(&command).unwrap();
+            // 2. Wait for WELCOME
+            let mut buffer = [0; 512];
+            match stream.read(&mut buffer) {
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&buffer[..n]);
 
-            // 3. Send it!
-            stream.write_all(json_data.as_bytes()).unwrap();
-            println!("Sent: {}", json_data);
+                    // Try to parse the reply
+                    let response: Result<Message, _> = serde_json::from_str(&text);
+
+                    if let Ok(Message::Welcome { session_id }) = response {
+                        println!("Login Successful! Session ID: {}", session_id);
+                    } else {
+                        println!("Unexpected response: {}", text);
+                    }
+                }
+                Err(e) => println!("Failed to read: {}", e),
+            }
         }
-        Err(e) => println!("Failed: {}", e),
+        Err(e) => println!("Failed to connect: {}", e),
     }
 }
