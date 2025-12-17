@@ -2,3 +2,5 @@
 /uploads
 *.bin
 *.log
+*.sh
+*.exe

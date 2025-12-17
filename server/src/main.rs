@@ -49,7 +49,24 @@ fn send_message(stream: &mut TcpStream, msg: &Message) {
     stream.write_all(json.as_bytes()).unwrap();
 }
 
+fn verify_user(username: &str, salt: &str, answer: &str) -> bool {
+    // For demo purposes, we hardcode a single user
+    if username == "admin" {
+        let actual_pass = "secret123";
+        let combined = format!("{}{}", actual_pass, salt);
+
+        let mut hasher = Sha256::new();
+        hasher.update(combined.as_bytes());
+        let expected_hash = hex::encode(hasher.finalize());
+
+        return answer == expected_hash;
+    }
+    false
+}
+
 fn handle_client(mut stream: TcpStream) {
+    let mut current_salt = String::new();
+    let mut is_authenticated = false;
     loop {
         // ... (Header reading logic same as before) ...
         let mut len_bytes = [0u8; 4];
@@ -66,17 +83,56 @@ fn handle_client(mut stream: TcpStream) {
         let request: Result<Message, _> = serde_json::from_str(&received_text);
 
         match request {
-            Ok(Message::Hello { .. }) => {
-                send_message(
-                    &mut stream,
-                    &Message::Welcome {
-                        session_id: "s1".to_string(),
-                    },
-                );
-            }
+            // STEP 1: Login Request
+            Ok(Message::LoginRequest { client_id }) => {
+                println!("Login attempt: {}", client_id);
+                // Generate random salt
+                let salt = Uuid::new_v4().to_string();
+                current_salt = salt.clone();
 
+                send_message(&mut stream, &Message::LoginChallenge { salt });
+            }
+            // STEP 2: Verify Answer
+            Ok(Message::LoginAnswer { hash }) => {
+                if verify_user("admin", &current_salt, &hash) {
+                    println!("Auth Success!");
+                    is_authenticated = true;
+                    send_message(
+                        &mut stream,
+                        &Message::Welcome {
+                            session_id: "s1".to_string(),
+                        },
+                    );
+                } else {
+                    println!("Auth Failed! Disconnecting.");
+                    // 1. SEND ERROR MESSAGE
+                    send_message(
+                        &mut stream,
+                        &Message::ErrorMessage {
+                            text: "Access Denied: Wrong Password".to_string(),
+                        },
+                    );
+                    return; // Drop connection
+                }
+            }
+            // SECURITY CHECK: Block everything else if not authenticated
+            _ if !is_authenticated => {
+                println!("Unauthorized request. Dropping.");
+                return;
+            }
             // 1. START UPLOAD: Generate UUID and Folder
             Ok(Message::InitUpload { file_name, .. }) => {
+                if file_name.ends_with(".sh") || file_name.ends_with(".exe") {
+                    println!("Security Alert: Rejected {}", file_name);
+                    send_message(
+                        &mut stream,
+                        &Message::ErrorMessage {
+                            text: "Security Policy Violation: Executables not allowed.".to_string(),
+                        },
+                    );
+                    continue; // Skip the rest, client will handle the error
+                }
+
                 let uuid = Uuid::new_v4().to_string();
                 let upload_folder = format!("uploads/{}", uuid);
 
@@ -124,8 +180,10 @@ fn handle_client(mut stream: TcpStream) {
             Ok(Message::Complete {
                 upload_id,
                 file_name,
+                total_chunks,
             }) => {
-                merge_chunks(&upload_id, &file_name, 13); // Hardcoded 13 for now
+                println!("Upload Complete: {}", file_name);
+                merge_chunks(&upload_id, &file_name, total_chunks); // Use the real number!
             }
             _ => {}
         }
