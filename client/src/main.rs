@@ -37,6 +37,17 @@ enum Commands {
     },
 }
 
+const BANNER: &str = r#"
+ ███████████                                 ███████████ ████                         
+░░███░░░░░███                               ░░███░░░░░░█░░███                         
+ ░███     ░███  ██████    ████████   ██████  ░███   █ ░  ░███    ██████  █████ ███ █████
+ ░██████████   ░░░░░███  ░░███░░███ ░░░░░███  ░███████    ░███   ███░░███░░███ ░███░░███ 
+ ░███░░░░░░     ███████   ░███ ░░░   ███████  ░███░░░█    ░███  ░███ ░███ ░███ ░███ ░███ 
+ ░███          ███░░███   ░███      ███░░███  ░███  ░     ░███  ░███ ░███ ░░███████████  
+ █████        ░░████████  █████    ░░████████ █████       █████ ░░██████   ░░████░████   
+░░░░░          ░░░░░░░░  ░░░░░      ░░░░░░░░ ░░░░░       ░░░░░   ░░░░░░     ░░░░ ░░░░    
+"#;
+
 // UPDATED: Now accepts 'password' argument
 fn connect_and_auth(address: &str, password: &str) -> TcpStream {
     let mut stream = TcpStream::connect(address).expect("Failed to connect");
@@ -103,6 +114,7 @@ fn read_message(stream: &mut TcpStream) -> Message {
 }
 
 fn main() {
+    println!("\x1b[36m{}\x1b[0m", BANNER);
     let cli = Cli::parse();
 
     match &cli.command {
