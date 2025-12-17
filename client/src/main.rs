@@ -53,7 +53,10 @@ fn main() {
     let file_size = std::fs::metadata(filename).unwrap().len();
     let total_chunks = (file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
-    // ... (Keep Initialization logic exactly the same) ...
+    // VARIABLE TO STORE THE ID
+    let mut current_upload_id = String::new();
+
+    // 1. INITIALIZE (Get the ID)
     {
         println!("Initializing upload with server...");
         let mut setup_stream = connect_and_auth();
@@ -64,92 +67,86 @@ fn main() {
                 total_size: file_size,
             },
         );
-        read_message(&mut setup_stream);
-        println!("Server is ready.");
+
+        let response = read_message(&mut setup_stream);
+        if let Message::InitAck { upload_id, .. } = response {
+            println!("Server assigned Upload ID: {}", upload_id);
+            current_upload_id = upload_id; // Save it!
+        } else {
+            panic!("Server did not send InitAck!");
+        }
     }
 
+    // Share the ID with workers (Arc string)
+    let upload_id_arc = Arc::new(current_upload_id.clone());
     let job_queue: Vec<u64> = (0..total_chunks).collect();
     let queue_ptr = Arc::new(Mutex::new(job_queue));
     let mut handles = vec![];
 
     for worker_id in 0..WORKER_COUNT {
         let queue_ref = Arc::clone(&queue_ptr);
+        let id_ref = Arc::clone(&upload_id_arc); // Give worker access to ID
         let fname = filename.to_string();
 
         let handle = thread::spawn(move || {
             let mut stream = connect_and_auth();
-            println!("Worker {} connected.", worker_id);
-
             loop {
-                // 1. POP A JOB
+                // ... (Pop Job) ...
                 let chunk_index = {
                     let mut queue = queue_ref.lock().unwrap();
                     match queue.pop() {
                         Some(idx) => idx,
-                        None => break, // Queue empty, we are done
+                        None => break,
                     }
                 };
-                // 2. RETRY LOOP (Keep trying this specific chunk until success)
+
+                let mut attempts = 0;
                 loop {
-                    // println!("Worker {} processing Chunk #{}", worker_id, chunk_index);
-                    println!("Worker {} processing Chunk #{} ", worker_id, chunk_index);
+                    attempts += 1;
+                    // ... (Read chunk logic) ...
+                    let chunk_data = read_chunk(&fname, chunk_index);
 
-                    // let chunk_data = read_chunk(&fname, chunk_index);
-                    let chunk_data = read_chunk(&fname, chunk_index); // Note: mut
-
-                    // Calculate Hash
+                    // ... (Hash logic) ...
                     let mut hasher = Sha256::new();
                     hasher.update(&chunk_data);
                     let hash_string = hex::encode(hasher.finalize());
 
-                    // Send Meta
+                    // SEND MESSAGE (Using the Upload ID!)
                     send_message(
                         &mut stream,
                         &Message::ChunkMeta {
+                            upload_id: id_ref.to_string(), // <--- USE ID
                             chunk_index,
                             size: chunk_data.len(),
                             hash: hash_string,
                         },
                     );
 
-                    // Send Data
                     stream.write_all(&chunk_data).unwrap();
 
-                    // 3. WAIT FOR VERDICT
+                    // ... (Ack/Nack logic same as before) ...
                     let response = read_message(&mut stream);
                     match response {
-                        Message::ChunkAck { .. } => {
-                            // Success! Break the inner loop to get the next job
-                            println!("Worker {} Chunk #{} ACK received.", worker_id, chunk_index);
-                            break;
-                        }
-                        Message::ChunkNack { .. } => {
-                            // Failure! The loop continues, so we read and send again.
-                            println!(
-                                "⚠️ Worker {} Chunk #{} REJECTED (NACK). Retrying...",
-                                worker_id, chunk_index
-                            );
-                        }
-                        _ => {
-                            println!("Worker {} received unexpected message.", worker_id);
-                        }
+                        Message::ChunkAck { .. } => break,
+                        Message::ChunkNack { .. } => println!("Worker {} Retry...", worker_id),
+                        _ => {}
                     }
                 }
             }
-            println!("Worker {} finished.", worker_id);
         });
         handles.push(handle);
     }
 
-    // ... (Keep the join loop and Complete signal exactly the same) ...
     for handle in handles {
         handle.join().unwrap();
     }
 
+    // 2. COMPLETE (Send ID)
     let mut stream = connect_and_auth();
     send_message(
         &mut stream,
         &Message::Complete {
+            upload_id: current_upload_id, // <--- USE ID
             file_name: filename.to_string(),
         },
     );

@@ -8,29 +8,36 @@ pub enum Message {
     Welcome {
         session_id: String,
     },
+
     InitUpload {
         file_name: String,
         total_size: u64,
     },
+
+    // UPDATED: Server now gives a specific Upload ID
     InitAck {
         chunk_size: u64,
+        upload_id: String, // <--- NEW
     },
 
-    // UPDATED: Now includes the hash!
+    // UPDATED: Worker must specify which upload this belongs to
     ChunkMeta {
+        upload_id: String, // <--- NEW
         chunk_index: u64,
         size: usize,
-        hash: String, // <--- NEW FIELD
+        hash: String,
     },
 
     ChunkAck {
         chunk_index: u64,
     },
-
     ChunkNack {
         chunk_index: u64,
     },
+
+    // UPDATED: Tell server which folder to merge
     Complete {
+        upload_id: String, // <--- NEW
         file_name: String,
     },
 }

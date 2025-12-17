@@ -3,21 +3,37 @@ use shared::Message;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::thread; // NEW
+use std::thread;
+use uuid::Uuid; // NEW
 
-// ... (keep merge_chunks and send_message exactly as they are) ...
-fn merge_chunks(file_name: &str, total_chunks: u64) {
+// UPDATED: Merge logic now looks in the temporary sub-folder
+fn merge_chunks(upload_id: &str, file_name: &str, total_chunks: u64) {
+    let temp_dir = format!("uploads/{}", upload_id);
     let output_path = format!("uploads/{}", file_name);
+
+    println!(
+        ">> Merging {} chunks from {} into {}...",
+        total_chunks, temp_dir, output_path
+    );
+
     let mut output_file = File::create(&output_path).unwrap();
+
     for i in 0..total_chunks {
-        let chunk_path = format!("uploads/chunk_{}", i);
-        let mut chunk_file = File::open(&chunk_path).unwrap();
+        let chunk_path = format!("{}/chunk_{}", temp_dir, i);
+
+        // Retry logic for file opening (sometimes OS is slow to release locks)
+        let mut chunk_file = File::open(&chunk_path).expect("Missing chunk during merge");
+
         std::io::copy(&mut chunk_file, &mut output_file).unwrap();
-        fs::remove_file(chunk_path).unwrap();
+        // We don't delete individual chunks yet, we delete the whole folder at the end
     }
-    println!(">> File Assembled: {}", output_path);
+
+    // Cleanup: Remove the temporary directory
+    fs::remove_dir_all(temp_dir).unwrap();
+    println!(">> Merge Complete. Saved to {}", output_path);
 }
 
+// ... (send_message stays the same) ...
 fn send_message(stream: &mut TcpStream, msg: &Message) {
     let json = serde_json::to_string(msg).unwrap();
     let len = (json.len() as u32).to_be_bytes();
@@ -50,51 +66,65 @@ fn handle_client(mut stream: TcpStream) {
                     },
                 );
             }
+
+            // 1. START UPLOAD: Generate UUID and Folder
             Ok(Message::InitUpload { file_name, .. }) => {
-                fs::create_dir_all("uploads").unwrap();
-                send_message(&mut stream, &Message::InitAck { chunk_size: 0 });
+                let uuid = Uuid::new_v4().to_string();
+                let upload_folder = format!("uploads/{}", uuid);
+
+                println!("Starting Upload: {} -> ID: {}", file_name, uuid);
+                fs::create_dir_all(&upload_folder).unwrap();
+
+                send_message(
+                    &mut stream,
+                    &Message::InitAck {
+                        chunk_size: 0,
+                        upload_id: uuid, // Send ID back to client
+                    },
+                );
             }
 
+            // 2. RECEIVE CHUNK: Save to specific folder
             Ok(Message::ChunkMeta {
+                upload_id,
                 chunk_index,
                 size,
                 hash,
             }) => {
-                // 1. Read the Data
                 let mut file_data = vec![0u8; size];
                 if stream.read_exact(&mut file_data).is_err() {
                     return;
                 }
 
-                // 2. Calculate Hash Locally
                 let mut hasher = Sha256::new();
                 hasher.update(&file_data);
                 let server_hash = hex::encode(hasher.finalize());
 
-                // 3. Verify
                 if server_hash == hash {
-                    // MATCH: Save and ACK
-                    let safe_name = format!("uploads/chunk_{}", chunk_index);
-                    let mut f = File::create(&safe_name).unwrap();
+                    // Save to sub-folder
+                    let safe_path = format!("uploads/{}/chunk_{}", upload_id, chunk_index);
+                    let mut f = File::create(&safe_path).unwrap();
                     f.write_all(&file_data).unwrap();
-
                     send_message(&mut stream, &Message::ChunkAck { chunk_index });
                 } else {
-                    // MISMATCH: Send NACK
-                    println!("!!! CORRUPTION on Chunk #{} !!! Sending NACK.", chunk_index);
-                    // Do NOT save the file.
+                    println!("!!! CORRUPTION on Chunk #{} !!!", chunk_index);
                     send_message(&mut stream, &Message::ChunkNack { chunk_index });
                 }
             }
 
-            Ok(Message::Complete { file_name }) => {
-                merge_chunks(&file_name, 13);
+            // 3. COMPLETE: Merge from sub-folder
+            Ok(Message::Complete {
+                upload_id,
+                file_name,
+            }) => {
+                merge_chunks(&upload_id, &file_name, 13); // Hardcoded 13 for now
             }
             _ => {}
         }
     }
 }
 
+// ... (main stays the same) ...
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     println!("Server listening...");
