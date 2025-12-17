@@ -1,64 +1,89 @@
 use shared::Message;
+use std::fs::{self, File}; // Added fs and File
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::thread; // Import the shared Enum
+use std::thread;
 
 fn handle_client(mut stream: TcpStream) {
-    let mut buffer = [0; 512];
-
     loop {
-        match stream.read(&mut buffer) {
-            Ok(size) => {
-                if size == 0 {
+        // 1. Read Length Header
+        let mut len_bytes = [0u8; 4];
+        if stream.read_exact(&mut len_bytes).is_err() {
+            return;
+        }
+        let len = u32::from_be_bytes(len_bytes) as usize;
+
+        // 2. Read JSON
+        let mut json_buffer = vec![0u8; len];
+        if stream.read_exact(&mut json_buffer).is_err() {
+            return;
+        }
+
+        let received_text = String::from_utf8_lossy(&json_buffer);
+        let request: Result<Message, _> = serde_json::from_str(&received_text);
+
+        match request {
+            Ok(Message::Hello { client_id }) => {
+                println!("User logged in: {}", client_id);
+                send_message(
+                    &mut stream,
+                    &Message::Welcome {
+                        session_id: "sess_1".to_string(),
+                    },
+                );
+            }
+
+            Ok(Message::InitUpload {
+                file_name,
+                total_size,
+            }) => {
+                println!("Upload Start: {} ({} bytes)", file_name, total_size);
+                // Create the uploads directory if it doesn't exist
+                fs::create_dir_all("uploads").unwrap();
+                send_message(
+                    &mut stream,
+                    &Message::InitAck {
+                        chunk_size: 4 * 1024 * 1024,
+                    },
+                );
+            }
+
+            Ok(Message::ChunkMeta { chunk_index, size }) => {
+                println!(">> Receiving Chunk #{} ({} bytes)", chunk_index, size);
+
+                // 3. READ BINARY DATA
+                let mut file_data = vec![0u8; size];
+                if stream.read_exact(&mut file_data).is_err() {
                     return;
                 }
 
-                // 1. Convert bytes to String
-                let received_text = String::from_utf8_lossy(&buffer[..size]);
-                println!("Raw Data: {}", received_text);
+                // 4. WRITE TO DISK (New!)
+                // We save it as "uploads/filename_part_0"
+                let safe_name = format!("uploads/chunk_{}", chunk_index);
+                let mut f = File::create(&safe_name).unwrap();
+                f.write_all(&file_data).unwrap();
 
-                // 2. Deserialize: Turn String into a Rust Enum (Message)
-                // We use from_str to parse the JSON.
-                let request: Result<Message, _> = serde_json::from_str(&received_text);
-
-                match request {
-                    Ok(Message::Hello { client_id }) => {
-                        println!("Processing Login for: {}", client_id);
-
-                        // 3. Prepare the Reply (Welcome Message)
-                        let reply = Message::Welcome {
-                            session_id: "sess_999".to_string(), // Dummy ID for now
-                        };
-
-                        // 4. Send the Reply as JSON
-                        let json_reply = serde_json::to_string(&reply).unwrap();
-                        stream.write_all(json_reply.as_bytes()).unwrap();
-                    }
-                    Ok(_) => {
-                        println!("Received a different message type.");
-                    }
-                    Err(e) => {
-                        println!("Failed to parse JSON: {}", e);
-                    }
-                }
+                println!(">> Saved {}", safe_name);
+                send_message(&mut stream, &Message::ChunkAck { chunk_index });
             }
-            Err(_) => {
-                return;
-            }
+            _ => {}
         }
     }
+}
+
+fn send_message(stream: &mut TcpStream, msg: &Message) {
+    let json = serde_json::to_string(msg).unwrap();
+    let len = (json.len() as u32).to_be_bytes();
+    stream.write_all(&len).unwrap();
+    stream.write_all(json.as_bytes()).unwrap();
 }
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
     println!("Server listening on 7878...");
-
     for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                thread::spawn(|| handle_client(stream));
-            }
-            Err(e) => println!("Error: {}", e),
+        if let Ok(s) = stream {
+            thread::spawn(|| handle_client(s));
         }
     }
 }
