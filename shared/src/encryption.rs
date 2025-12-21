@@ -1,10 +1,9 @@
 use aes_gcm::{
-    Aes256Gcm,
-    aead::{Aead, OsRng}, AeadCore, KeyInit, Nonce
+    AeadCore, Aes256Gcm, KeyInit, Nonce,
+    aead::{Aead, OsRng},
 };
 pub fn encrypt_chunk(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| "Invalid key length".to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid key length".to_string())?;
 
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
@@ -18,14 +17,12 @@ pub fn encrypt_chunk(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     Ok(result)
 }
 
-
 pub fn decrypt_chunk(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     if encrypted_data.len() < 12 {
         return Err("Data too short".to_string());
     }
 
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| "Invalid key length".to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| "Invalid key length".to_string())?;
 
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
@@ -36,4 +33,3 @@ pub fn decrypt_chunk(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, S
 
     Ok(plaintext)
 }
-
